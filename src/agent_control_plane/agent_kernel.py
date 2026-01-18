@@ -51,6 +51,56 @@ class ExecutionStatus(Enum):
     ROLLED_BACK = "rolled_back"
 
 
+class RiskCategory(Enum):
+    """Categories of risk for agent actions"""
+
+    SECURITY = "security"  # Authentication, authorization, injection attacks
+    PRIVACY = "privacy"  # PII exposure, data leakage, GDPR/compliance
+    RELIABILITY = "reliability"  # System stability, data integrity, availability
+    COMPLIANCE = "compliance"  # Regulatory requirements, audit trails
+
+
+class EnvironmentType(Enum):
+    """Type of environment where action is executed"""
+
+    PRODUCTION = "production"
+    STAGING = "staging"
+    DEVELOPMENT = "development"
+    TESTING = "testing"
+    SHADOW = "shadow"  # Shadow mode execution
+
+
+@dataclass
+class RiskDetails:
+    """Detailed risk information for an action"""
+
+    security_risk: float = 0.0  # 0.0 to 1.0
+    privacy_risk: float = 0.0  # 0.0 to 1.0
+    reliability_risk: float = 0.0  # 0.0 to 1.0
+    compliance_risk: float = 0.0  # 0.0 to 1.0
+    risk_factors: List[str] = field(default_factory=list)  # Specific risk factors identified
+    
+    @property
+    def overall_risk(self) -> float:
+        """Calculate overall risk score as weighted average"""
+        return (
+            self.security_risk * 0.3 +
+            self.privacy_risk * 0.3 +
+            self.reliability_risk * 0.2 +
+            self.compliance_risk * 0.2
+        )
+    
+    def get_risk_by_category(self, category: RiskCategory) -> float:
+        """Get risk score for a specific category"""
+        risk_map = {
+            RiskCategory.SECURITY: self.security_risk,
+            RiskCategory.PRIVACY: self.privacy_risk,
+            RiskCategory.RELIABILITY: self.reliability_risk,
+            RiskCategory.COMPLIANCE: self.compliance_risk,
+        }
+        return risk_map.get(category, 0.0)
+
+
 @dataclass
 class AgentContext:
     """Context for an agent session"""
@@ -60,6 +110,7 @@ class AgentContext:
     created_at: datetime
     permissions: Dict[ActionType, PermissionLevel] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    environment: EnvironmentType = EnvironmentType.DEVELOPMENT  # Default to dev
 
 
 @dataclass
@@ -73,6 +124,8 @@ class ExecutionRequest:
     timestamp: datetime
     status: ExecutionStatus = ExecutionStatus.PENDING
     risk_score: float = 0.0
+    risk_details: Optional[RiskDetails] = None  # Detailed risk breakdown
+    is_production_touch: bool = False  # Flag for production environment actions
 
 
 @dataclass
@@ -290,6 +343,9 @@ class AgentKernel:
             timestamp=datetime.now(),
         )
 
+        # ALWAYS assess risk first (for tracking purposes)
+        request.risk_score = self._assess_risk(request)
+
         # Check permissions
         if not self._check_permission(request):
             request.status = ExecutionStatus.DENIED
@@ -306,9 +362,6 @@ class AgentKernel:
                 "request_denied", {"request_id": request.request_id, "reason": "policy_violation"}
             )
             return request
-
-        # Assess risk
-        request.risk_score = self._assess_risk(request)
 
         # Approve for execution
         request.status = ExecutionStatus.APPROVED
@@ -397,18 +450,187 @@ class AgentKernel:
         return True
 
     def _assess_risk(self, request: ExecutionRequest) -> float:
-        """Assess the risk level of a request (0.0 = no risk, 1.0 = maximum risk)"""
-        # Simple risk assessment based on action type
-        risk_weights = {
-            ActionType.FILE_READ: 0.1,
-            ActionType.API_CALL: 0.3,
-            ActionType.CODE_EXECUTION: 0.7,
-            ActionType.FILE_WRITE: 0.5,
-            ActionType.DATABASE_QUERY: 0.4,
-            ActionType.DATABASE_WRITE: 0.6,
-            ActionType.WORKFLOW_TRIGGER: 0.5,
+        """
+        Comprehensive risk assessment with detailed categorization.
+        Returns overall risk score and populates request.risk_details.
+        """
+        # Initialize risk details and attach to request FIRST
+        request.risk_details = RiskDetails()
+        
+        # Determine if this is a production touch
+        request.is_production_touch = (
+            request.agent_context.environment == EnvironmentType.PRODUCTION
+        )
+        
+        # 1. SECURITY RISK ASSESSMENT
+        security_risk = self._assess_security_risk(request)
+        request.risk_details.security_risk = security_risk
+        
+        # 2. PRIVACY RISK ASSESSMENT
+        privacy_risk = self._assess_privacy_risk(request)
+        request.risk_details.privacy_risk = privacy_risk
+        
+        # 3. RELIABILITY RISK ASSESSMENT
+        reliability_risk = self._assess_reliability_risk(request)
+        request.risk_details.reliability_risk = reliability_risk
+        
+        # 4. COMPLIANCE RISK ASSESSMENT
+        compliance_risk = self._assess_compliance_risk(request)
+        request.risk_details.compliance_risk = compliance_risk
+        
+        # Production touches get elevated risk
+        overall_risk = request.risk_details.overall_risk
+        if request.is_production_touch:
+            overall_risk = min(1.0, overall_risk * 1.2)
+            request.risk_details.risk_factors.append("production_environment")
+        
+        return overall_risk
+    
+    def _assess_security_risk(self, request: ExecutionRequest) -> float:
+        """Assess security-related risks"""
+        risk = 0.0
+        params = request.parameters
+        
+        # Base risk by action type
+        security_weights = {
+            ActionType.CODE_EXECUTION: 0.9,  # High risk for arbitrary code
+            ActionType.DATABASE_WRITE: 0.7,  # SQL injection potential
+            ActionType.FILE_WRITE: 0.6,  # File system manipulation
+            ActionType.API_CALL: 0.5,  # External data exposure
+            ActionType.WORKFLOW_TRIGGER: 0.4,
+            ActionType.DATABASE_QUERY: 0.3,
+            ActionType.FILE_READ: 0.2,
         }
-        return risk_weights.get(request.action_type, 0.5)
+        risk = security_weights.get(request.action_type, 0.3)
+        
+        # Check for injection attack patterns
+        params_str = str(params).lower()
+        dangerous_patterns = ['drop table', 'delete from', '--', ';--', 'union select', 
+                             'exec(', 'eval(', '__import__', 'system(', '/etc/passwd']
+        for pattern in dangerous_patterns:
+            if pattern in params_str:
+                risk = min(1.0, risk + 0.3)
+                if request.risk_details:
+                    request.risk_details.risk_factors.append(f"security_pattern:{pattern}")
+                break
+        
+        # Check for credential exposure
+        credential_keywords = ['password', 'api_key', 'secret', 'token', 'credential']
+        if any(keyword in params_str for keyword in credential_keywords):
+            risk = min(1.0, risk + 0.2)
+            if request.risk_details:
+                request.risk_details.risk_factors.append("potential_credential_exposure")
+        
+        return risk
+    
+    def _assess_privacy_risk(self, request: ExecutionRequest) -> float:
+        """Assess privacy-related risks (PII, data leakage)"""
+        risk = 0.0
+        params = request.parameters
+        
+        # Actions that commonly handle sensitive data
+        privacy_weights = {
+            ActionType.DATABASE_QUERY: 0.5,  # May access PII
+            ActionType.DATABASE_WRITE: 0.6,  # May store PII
+            ActionType.API_CALL: 0.7,  # May transmit PII
+            ActionType.FILE_WRITE: 0.4,
+            ActionType.FILE_READ: 0.3,
+            ActionType.CODE_EXECUTION: 0.5,
+            ActionType.WORKFLOW_TRIGGER: 0.3,
+        }
+        risk = privacy_weights.get(request.action_type, 0.2)
+        
+        # Check for PII indicators
+        params_str = str(params).lower()
+        pii_keywords = ['ssn', 'social_security', 'email', 'phone', 'address', 
+                       'credit_card', 'passport', 'driver_license', 'dob', 'birth']
+        for keyword in pii_keywords:
+            if keyword in params_str:
+                risk = min(1.0, risk + 0.3)
+                if request.risk_details:
+                    request.risk_details.risk_factors.append(f"pii_indicator:{keyword}")
+                break
+        
+        # Check for GDPR-sensitive operations
+        gdpr_keywords = ['personal_data', 'user_data', 'customer', 'profile']
+        if any(keyword in params_str for keyword in gdpr_keywords):
+            risk = min(1.0, risk + 0.15)
+            if request.risk_details:
+                request.risk_details.risk_factors.append("gdpr_sensitive_data")
+        
+        return risk
+    
+    def _assess_reliability_risk(self, request: ExecutionRequest) -> float:
+        """Assess reliability/availability risks"""
+        risk = 0.0
+        params = request.parameters
+        
+        # Actions that can impact system stability
+        reliability_weights = {
+            ActionType.DATABASE_WRITE: 0.7,  # Data integrity
+            ActionType.FILE_WRITE: 0.6,  # File system integrity
+            ActionType.CODE_EXECUTION: 0.8,  # System stability
+            ActionType.WORKFLOW_TRIGGER: 0.5,  # Cascading effects
+            ActionType.API_CALL: 0.4,
+            ActionType.DATABASE_QUERY: 0.3,  # Resource consumption
+            ActionType.FILE_READ: 0.2,
+        }
+        risk = reliability_weights.get(request.action_type, 0.3)
+        
+        # Check for potentially destructive operations
+        params_str = str(params).lower()
+        destructive_patterns = ['delete', 'drop', 'truncate', 'remove', 'clear', 
+                               'destroy', 'purge', 'wipe']
+        for pattern in destructive_patterns:
+            if pattern in params_str:
+                risk = min(1.0, risk + 0.3)
+                if request.risk_details:
+                    request.risk_details.risk_factors.append(f"destructive_operation:{pattern}")
+                break
+        
+        # Batch operations are higher risk
+        batch_keywords = ['batch', 'bulk', 'mass', 'all']
+        if any(keyword in params_str for keyword in batch_keywords):
+            risk = min(1.0, risk + 0.2)
+            if request.risk_details:
+                request.risk_details.risk_factors.append("batch_operation")
+        
+        return risk
+    
+    def _assess_compliance_risk(self, request: ExecutionRequest) -> float:
+        """Assess compliance and audit risks"""
+        risk = 0.0
+        
+        # Actions requiring audit trails
+        compliance_weights = {
+            ActionType.DATABASE_WRITE: 0.6,  # Data modification tracking
+            ActionType.FILE_WRITE: 0.5,
+            ActionType.CODE_EXECUTION: 0.7,  # Must be logged
+            ActionType.WORKFLOW_TRIGGER: 0.5,
+            ActionType.API_CALL: 0.4,
+            ActionType.DATABASE_QUERY: 0.3,
+            ActionType.FILE_READ: 0.2,
+        }
+        risk = compliance_weights.get(request.action_type, 0.2)
+        
+        # Production touches require stricter compliance
+        if request.agent_context.environment == EnvironmentType.PRODUCTION:
+            risk = min(1.0, risk + 0.2)
+            if request.risk_details:
+                request.risk_details.risk_factors.append("production_compliance")
+        
+        # Check for regulated data operations
+        params_str = str(request.parameters).lower()
+        regulated_keywords = ['financial', 'medical', 'health', 'hipaa', 'sox', 
+                             'pci', 'payment', 'transaction']
+        for keyword in regulated_keywords:
+            if keyword in params_str:
+                risk = min(1.0, risk + 0.25)
+                if request.risk_details:
+                    request.risk_details.risk_factors.append(f"regulated_data:{keyword}")
+                break
+        
+        return risk
 
     def _dispatch_execution(self, request: ExecutionRequest) -> Any:
         """
