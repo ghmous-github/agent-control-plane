@@ -13,6 +13,9 @@ from .agent_kernel import (
     PermissionLevel,
     ExecutionStatus,
     PolicyRule,
+    RiskCategory,
+    RiskDetails,
+    EnvironmentType,
 )
 
 from .policy_engine import (
@@ -108,6 +111,11 @@ __all__ = [
     "PermissionLevel",
     "ExecutionStatus",
     "SandboxLevel",
+    "RiskCategory",
+    "EnvironmentType",
+    
+    # Risk tracking
+    "RiskDetails",
     
     # Policy
     "PolicyEngine",

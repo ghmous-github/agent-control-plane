@@ -35,6 +35,7 @@ As we move from chatbots to autonomous agents—systems that can execute code, m
 - **Supervisor Agents**: Recursive governance with agents watching agents, bound by a constitution of code
 - **Reasoning Telemetry**: Complete trace of agent decision-making process
 - **Red Team Dataset**: Comprehensive adversarial prompt testing with 60+ attack vectors
+- **Production Touch Tracking**: Capture every production action with categorized Security/Privacy/Reliability/Compliance risk assessment
 
 ## Key Concepts
 
@@ -445,6 +446,84 @@ for supervisor_id, viols in violations.items():
     for v in viols:
         print(f"[{v.severity}] {v.description}")
 ```
+
+#### Production Touch Tracking - Multi-Dimensional Risk Assessment
+
+Capture every production action with comprehensive risk categorization:
+
+```python
+from agent_control_plane import (
+    AgentControlPlane, AgentContext, ActionType, 
+    PermissionLevel, EnvironmentType, FlightRecorder
+)
+from datetime import datetime
+
+# Setup
+control_plane = AgentControlPlane(enable_default_policies=True)
+flight_recorder = FlightRecorder(db_path="production_audit.db")
+
+# Create production agent
+prod_agent = AgentContext(
+    agent_id="prod-agent-001",
+    session_id="session-001",
+    created_at=datetime.now(),
+    permissions={ActionType.DATABASE_QUERY: PermissionLevel.READ_ONLY},
+    environment=EnvironmentType.PRODUCTION  # Production environment!
+)
+
+# Execute action - risk is automatically assessed
+request = control_plane.kernel.submit_request(
+    prod_agent,
+    ActionType.DATABASE_QUERY,
+    {"query": "SELECT email, ssn FROM users WHERE id = 123"}
+)
+
+# Comprehensive risk breakdown
+print(f"Is Production Touch: {request.is_production_touch}")  # True
+print(f"Overall Risk: {request.risk_score:.2f}")  # Weighted score
+
+if request.risk_details:
+    print(f"Security Risk:    {request.risk_details.security_risk:.2f}")
+    print(f"Privacy Risk:     {request.risk_details.privacy_risk:.2f}")
+    print(f"Reliability Risk: {request.risk_details.reliability_risk:.2f}")
+    print(f"Compliance Risk:  {request.risk_details.compliance_risk:.2f}")
+    print(f"Risk Factors: {request.risk_details.risk_factors}")
+    # e.g., ['pii_indicator:ssn', 'production_environment']
+
+# Log to FlightRecorder
+trace_id = flight_recorder.start_trace(
+    agent_id=request.agent_context.agent_id,
+    tool_name=request.action_type.value,
+    tool_args=request.parameters,
+)
+flight_recorder.log_risk_details(
+    trace_id=trace_id,
+    is_production_touch=request.is_production_touch,
+    environment=request.agent_context.environment.value,
+    security_risk=request.risk_details.security_risk,
+    privacy_risk=request.risk_details.privacy_risk,
+    reliability_risk=request.risk_details.reliability_risk,
+    compliance_risk=request.risk_details.compliance_risk,
+    overall_risk=request.risk_score,
+    risk_factors=request.risk_details.risk_factors,
+)
+
+# Query production touches
+prod_touches = flight_recorder.query_production_touches()
+high_risk_prod = flight_recorder.query_production_touches(min_risk=0.7)
+
+# Query by risk category
+high_security = flight_recorder.query_by_risk_category("security", min_risk=0.7)
+high_privacy = flight_recorder.query_by_risk_category("privacy", min_risk=0.6)
+
+# Get comprehensive risk summary
+summary = flight_recorder.get_risk_summary()
+print(f"High-risk actions: {summary['high_risk_actions']}")
+print(f"By environment: {summary['by_environment']}")
+print(f"Top risk factors: {summary['top_risk_factors']}")
+```
+
+**See [Production Touch Tracking Guide](docs/PRODUCTION_TOUCH_TRACKING.md) for complete documentation.**
 
 ## Architecture
 
