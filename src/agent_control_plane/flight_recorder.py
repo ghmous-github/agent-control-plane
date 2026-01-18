@@ -10,6 +10,7 @@ import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
+from collections import Counter
 import json
 import logging
 
@@ -612,7 +613,6 @@ class FlightRecorder:
                     pass
 
         # Count risk factor occurrences
-        from collections import Counter
         factor_counts = Counter(all_factors)
         top_risk_factors = [
             {"factor": factor, "count": count}
